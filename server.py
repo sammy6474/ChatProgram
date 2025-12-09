@@ -38,12 +38,16 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             writer.close(); await writer.wait_closed(); return
 
         name = msg["name"]
+        new_user = False
         async with lock:
             if name in clients:
                 await send_json(writer, {"type":"error","msg":"name already taken"})
                 writer.close(); await writer.wait_closed(); return
             clients[name] = (reader, writer)
+            new_user = True
             print(f"{name} registered from {addr}")
+
+        if new_user:
             # notify all
             await broadcast_users()
 
@@ -115,12 +119,15 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     except Exception as e:
         print("client error:", e)
     finally:
+        removed = False
         if name:
             async with lock:
                 if name in clients:
                     del clients[name]
+                    removed = True
                     print(f"{name} disconnected")
-                    await broadcast_users()
+        if removed:
+            await broadcast_users()
         try:
             writer.close()
             await writer.wait_closed()
