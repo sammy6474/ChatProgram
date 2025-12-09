@@ -71,11 +71,12 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 if to:
                     # direct message
                     async with lock:
-                        if to in clients:
-                            _, w = clients[to]
-                            await send_json(w, {"type":"msg","from":name,"text":text})
-                        else:
-                            await send_json(writer, {"type":"error","msg":"user not online"})
+                        target = clients.get(to)
+                    if target:
+                        _, w = target
+                        await send_json(w, {"type":"msg","from":name,"text":text})
+                    else:
+                        await send_json(writer, {"type":"error","msg":"user not online"})
                 else:
                     # broadcast
                     await broadcast({"type":"msg","from":name,"text":text})
@@ -83,7 +84,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 to = header.get("to")
                 filename = header.get("filename")
                 size = int(header.get("size",0))
-                if not to or to not in clients:
+                async with lock:
+                    target = clients.get(to) if to else None
+                if not target:
                     await send_json(writer, {"type":"error","msg":"recipient not found"})
                     # consume and discard body safely
                     try:
@@ -92,7 +95,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                         pass
                     continue
                 # forward header to recipient
-                _, w = clients[to]
+                _, w = target
                 await send_json(w, {"type":"file","from":name,"filename":filename,"size":size})
                 # relay binary data
                 remaining = size
@@ -136,15 +139,19 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
 async def broadcast(obj):
     async with lock:
-        to_remove = []
-        for n,(r,w) in clients.items():
-            try:
-                await send_json(w, obj)
-            except Exception:
-                to_remove.append(n)
-        for n in to_remove:
-            if n in clients:
-                del clients[n]
+        recipients = list(clients.items())
+
+    to_remove = []
+    for n, (r, w) in recipients:
+        try:
+            await send_json(w, obj)
+        except Exception:
+            to_remove.append(n)
+
+    if to_remove:
+        async with lock:
+            for n in to_remove:
+                clients.pop(n, None)
 
 async def send_user_list(writer):
     async with lock:
